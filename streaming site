@@ -1,0 +1,220 @@
+import React, { Suspense, lazy, useState, useEffect, useContext, createContext } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import { AnimatePresence, motion } from 'framer-motion';
+import axios from 'axios';
+
+// ===== TYPES =====
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  permissions: string[];
+} | null;
+
+type AuthContextType = {
+  user: User;
+  loading: boolean;
+  login: (email: string, password: string) => Promise<{ success: boolean; message?: string }>;
+  logout: () => Promise<void>;
+  register: (name: string, email: string, password: string) => Promise<{ success: boolean; message?: string }>;
+};
+
+// ===== CONTEXT =====
+const AuthContext = createContext<AuthContextType>({
+  user: null,
+  loading: true,
+  login: async () => ({ success: false }),
+  logout: async () => {},
+  register: async () => ({ success: false })
+});
+
+// ===== COMPONENTS =====
+const LoadingSpinner = () => (
+  <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 z-50">
+    <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500"></div>
+  </div>
+);
+
+const Layout = ({ children }: { children: React.ReactNode }) => {
+  const { user } = useAuth();
+  return (
+    <div className="min-h-screen flex flex-col bg-gray-100">
+      <header className="bg-blue-800 text-white p-4 shadow-md">
+        <div className="container mx-auto flex justify-between items-center">
+          <h1 className="text-2xl font-bold">SGRMOVIE</h1>
+          {user && (
+            <div className="flex items-center space-x-4">
+              <span className="hidden md:inline">Bonjour, {user.name}</span>
+              <button 
+                onClick={() => logout()}
+                className="bg-red-600 hover:bg-red-700 px-3 py-1 rounded text-sm"
+              >
+                Déconnexion
+              </button>
+            </div>
+          )}
+        </div>
+      </header>
+      
+      <main className="flex-grow container mx-auto p-4">{children}</main>
+      
+      <footer className="bg-gray-800 text-white p-4 text-center">
+        © {new Date().getFullYear()} SGRMOVIE - Tous droits réservés
+      </footer>
+    </div>
+  );
+};
+
+// ===== PAGES (Lazy Loading) =====
+const Home = lazy(() => import('./pages/Home'));
+const Login = lazy(() => import('./pages/Login'));
+const Register = lazy(() => import('./pages/Register'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const VideoPlayer = lazy(() => import('./pages/VideoPlayer'));
+const Admin = lazy(() => import('./pages/Admin'));
+const NotFound = lazy(() => import('./pages/NotFound'));
+const Unauthorized = lazy(() => import('./pages/Unauthorized'));
+
+// ===== AUTH PROVIDER =====
+const AuthProvider = ({ children }: { children: React.ReactNode }) => {
+  const [user, setUser] = useState<User>(null);
+  const [loading, setLoading] = useState(true);
+
+  const checkAuth = async () => {
+    try {
+      const { data } = await axios.get('/api/auth/me');
+      setUser(data.user);
+    } catch {
+      setUser(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    checkAuth();
+  }, []);
+
+  const login = async (email: string, password: string) => {
+    try {
+      const { data } = await axios.post('/api/auth/login', { email, password });
+      setUser(data.user);
+      return { success: true };
+    } catch (error) {
+      return { success: false, message: error.response?.data?.message || 'Erreur de connexion' };
+    }
+  };
+
+  const logout = async () => {
+    await axios.post('/api/auth/logout');
+    setUser(null);
+  };
+
+  const register = async (name: string, email: string, password: string) => {
+    try {
+      const { data } = await axios.post('/api/auth/register', { name, email, password });
+      setUser(data.user);
+      return { success: true };
+    } catch (error) {
+      return { success: false, message: error.response?.data?.message || "Erreur d'inscription" };
+    }
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, loading, login, logout, register }}>
+      {children}
+    </AuthContext.Provider>
+  );
+};
+
+// ===== HOOKS =====
+const useAuth = () => useContext(AuthContext);
+
+// ===== PROTECTED ROUTE =====
+const ProtectedRoute = ({ 
+  children, 
+  roles = [], 
+  permissions = [] 
+}: { 
+  children: React.ReactNode;
+  roles?: string[];
+  permissions?: string[];
+}) => {
+  const location = useLocation();
+  const { user, loading } = useAuth();
+
+  if (loading) return <LoadingSpinner />;
+  if (!user) return <Navigate to="/login" state={{ from: location }} replace />;
+  if (roles.length > 0 && !roles.includes(user.role)) return <Navigate to="/unauthorized" replace />;
+  if (permissions.length > 0 && !permissions.some(p => user.permissions.includes(p))) {
+    return <Navigate to="/unauthorized" replace />;
+  }
+
+  return <>{children}</>;
+};
+
+// ===== ANIMATIONS =====
+const pageAnimation = {
+  initial: { opacity: 0, y: 20 },
+  animate: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -20 },
+  transition: { duration: 0.3 }
+};
+
+// ===== MAIN APP =====
+const App = () => {
+  return (
+    <AuthProvider>
+      <BrowserRouter>
+        <Layout>
+          <AnimatePresence mode="wait">
+            <Suspense fallback={<LoadingSpinner />}>
+              <Routes>
+                <Route path="/" element={
+                  <motion.div {...pageAnimation}><Home /></motion.div>
+                } />
+
+                <Route path="/login" element={
+                  <motion.div {...pageAnimation}><Login /></motion.div>
+                } />
+
+                <Route path="/register" element={
+                  <motion.div {...pageAnimation}><Register /></motion.div>
+                } />
+
+                <Route path="/dashboard" element={
+                  <ProtectedRoute>
+                    <motion.div {...pageAnimation}><Dashboard /></motion.div>
+                  </ProtectedRoute>
+                } />
+
+                <Route path="/video/:id" element={
+                  <ProtectedRoute permissions={['video:view']}>
+                    <motion.div {...pageAnimation}><VideoPlayer /></motion.div>
+                  </ProtectedRoute>
+                } />
+
+                <Route path="/admin" element={
+                  <ProtectedRoute roles={['admin']}>
+                    <motion.div {...pageAnimation}><Admin /></motion.div>
+                  </ProtectedRoute>
+                } />
+
+                <Route path="/unauthorized" element={
+                  <motion.div {...pageAnimation}><Unauthorized /></motion.div>
+                } />
+
+                <Route path="*" element={
+                  <motion.div {...pageAnimation}><NotFound /></motion.div>
+                } />
+              </Routes>
+            </Suspense>
+          </AnimatePresence>
+        </Layout>
+      </BrowserRouter>
+    </AuthProvider>
+  );
+};
+
+export default App;
